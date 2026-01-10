@@ -476,13 +476,6 @@ class WanI2V:
                 mode="bicubic", align_corners=False
             )
 
-            # 3. Variance Correction: Restore lost variance from interpolation
-            std_old = latent_bt.std()
-            std_new = latent_up.std()
-            if std_new > 0:
-                latent_up = latent_up * (std_old / std_new)
-
-            # 4. Anti-aliasing Blur: Remove grid artifacts from upsampling
             if blur > 0:
                 # Ensure kernel size is odd
                 k = kernel if kernel % 2 == 1 else kernel + 1
@@ -514,11 +507,13 @@ class WanI2V:
                 
                 # Use provided noise_add or default to the start of the schedule
                 if noise_add is not None and noise_add > 0:
-                    t_noise = torch.tensor([noise_add], device=self.device)
+                    sigma = noise_add / 1000.0
                 else:
-                    t_noise = filtered_timesteps[0].unsqueeze(0).to(self.device)
+                    sigma = filtered_timesteps[0].item() / 1000.0
 
-                latent = sample_scheduler.add_noise(latent, noise, t_noise)
+                # Manual Flow Matching noise addition: x_t = (1 - sigma) * x_0 + sigma * epsilon
+                # This avoids scheduler errors if noise_add isn't exactly in the schedule
+                latent = (1 - sigma) * latent + sigma * noise
 
             arg_c = {
                 'context': [context[0]],
