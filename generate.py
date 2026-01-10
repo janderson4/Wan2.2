@@ -116,7 +116,6 @@ def _parse_args():
         "--size",
         type=str,
         default="1280*720",
-        choices=list(SIZE_CONFIGS.keys()),
         help="The area (width*height) of the generated video. For the I2V task, the aspect ratio of the output video will follow that of the input image."
     )
     parser.add_argument(
@@ -124,6 +123,26 @@ def _parse_args():
         type=int,
         default=None,
         help="How many frames of video are generated. The number should be 4n+1"
+    )
+    parser.add_argument(
+        "--final_sample_steps",
+        type=int,
+        default=None
+    )
+    parser.add_argument(
+        "--downscale",
+        type=int,
+        default=None
+    )
+    parser.add_argument(
+        "--final_window_size",
+        type=int,
+        default=None
+    )
+    parser.add_argument(
+        "--final_threshold",
+        type=float,
+        default=None
     )
     parser.add_argument(
         "--ckpt_dir",
@@ -534,6 +553,10 @@ def generate(args):
             frame_num=args.frame_num,
             shift=args.sample_shift,
             sample_solver=args.sample_solver,
+            final_sampling_steps=args.final_sample_steps, # final round sampling steps (though will be cut off at threshold noise)
+            downscale=args.downscale,
+            final_window_size=args.final_window_size, # the window size for attention in the final round
+            final_threshold = args.final_threshold,
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,

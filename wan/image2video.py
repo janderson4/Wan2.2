@@ -118,6 +118,15 @@ class WanI2V:
             dit_fsdp=dit_fsdp,
             shard_fn=shard_fn,
             convert_model_dtype=convert_model_dtype)
+        
+        self.low_noise_model = WanModel.from_pretrained(
+            checkpoint_dir, subfolder=config.low_noise_checkpoint)
+        self.low_noise_model = self._configure_model(
+            model=self.low_noise_model,
+            use_sp=use_sp,
+            dit_fsdp=dit_fsdp,
+            shard_fn=shard_fn,
+            convert_model_dtype=convert_model_dtype)
         if use_sp:
             self.sp_size = get_world_size()
         else:
@@ -202,6 +211,19 @@ class WanI2V:
                     required_model_name).parameters()).device.type == 'cpu':
                 getattr(self, required_model_name).to(self.device)
         return getattr(self, required_model_name)
+    
+@contextmanager
+def set_window_size(model, window_size):
+    old = []
+    for blk in model.blocks:
+        old.append(blk.self_attn.window_size)
+        blk.self_attn.window_size = window_size
+    try:
+        yield
+    finally:
+        for blk, w in zip(model.blocks, old):
+            blk.self_attn.window_size = w
+
 
     def generate(self,
                  input_prompt,
@@ -210,7 +232,11 @@ class WanI2V:
                  frame_num=81,
                  shift=5.0,
                  sample_solver='unipc',
-                 sampling_steps=40,
+                 sampling_steps=12, # first round sampling steps
+                 final_sampling_steps=40, # final round sampling steps (though will be cut off at threshold noise)
+                 downscale=None,
+                 final_window_size=None, # the window size for attention in the final round
+                 final_threshold = None, # the approximate assumed noise level of the upsampled image
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
@@ -254,8 +280,20 @@ class WanI2V:
                 - W: Frame width from max_area)
         """
         # preprocess
+        if downscale is None: downscale = 4
+        if final_sampling_steps is None: final_sampling_steps = 40
+        if final_window_size is None: final_window_size = (4500, 4500) # 80*45*1.25
+        if final_threshold is None: final_threshold = 0.08
+
+        if isinstance(final_window_size, int):
+            final_window_size = (final_window_size, final_window_size)
+        
+        # Ensure window size is int
+        final_window_size = (int(final_window_size[0]), int(final_window_size[1]))
+
         guide_scale = (guide_scale, guide_scale) if isinstance(
             guide_scale, float) else guide_scale
+        # 3, H, W
         img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device)
 
         F = frame_num
@@ -277,14 +315,6 @@ class WanI2V:
         seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
-        noise = torch.randn(
-            16,
-            (F - 1) // self.vae_stride[0] + 1,
-            lat_h,
-            lat_w,
-            dtype=torch.float32,
-            generator=seed_g,
-            device=self.device)
 
         msk = torch.ones(1, F, lat_h, lat_w, device=self.device)
         msk[:, 1:] = 0
@@ -294,6 +324,36 @@ class WanI2V:
                            dim=1)
         msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
         msk = msk.transpose(1, 2)[0]
+        # shape is now (4, F, h, w)?
+
+        # small conditioning image, 3, H, W
+        img_small=TF.resize(img, (h//downscale, w//downscale))
+
+        # small mask
+        lat_h, lat_w = lat_h//downscale, lat_w//downscale
+
+        msk_small = torch.ones(1, F, lat_h, lat_w, device=self.device)
+        msk_small[:, 1:] = 0
+        msk_small = torch.concat([
+            torch.repeat_interleave(msk_small[:, 0:1], repeats=4, dim=1), msk_small[:, 1:]
+        ],
+                           dim=1)
+        msk_small = msk_small.view(1, msk_small.shape[1] // 4, 4, lat_h, lat_w)
+        msk_small = msk_small.transpose(1, 2)[0]
+        # ends up being (1, 4, F, H, W)
+
+        noise = torch.randn(
+            16,
+            (F - 1) // self.vae_stride[0] + 1,
+            lat_h,
+            lat_w,
+            dtype=torch.float32,
+            generator=seed_g,
+            device=self.device)
+        
+        max_seq_len_small = ((F - 1) // self.vae_stride[0] + 1) * lat_h * lat_w // (
+            self.patch_size[1] * self.patch_size[2])
+        max_seq_len_small = int(math.ceil(max_seq_len / self.sp_size)) * self.sp_size
 
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
@@ -315,12 +375,23 @@ class WanI2V:
             torch.concat([
                 torch.nn.functional.interpolate(
                     img[None].cpu(), size=(h, w), mode='bicubic').transpose(
-                        0, 1),
+                        0, 1), # transpose makes it (3, 1, H, W)
                 torch.zeros(3, F - 1, h, w)
             ],
-                         dim=1).to(self.device)
+                         dim=1).to(self.device) # results in (3, F, h, w), with first frame only being nonzero
         ])[0]
-        y = torch.concat([msk, y])
+        y = torch.concat([msk, y]) # now 7, F, h, w?
+
+        y_small = self.vae.encode([
+            torch.concat([
+                torch.nn.functional.interpolate(
+                    img_small[None].cpu(), size=(h//downscale, w//downscale), mode='bicubic').transpose(
+                        0, 1), # [None] is same as squeeze(0), so this results in (3, 1, H, W)
+                torch.zeros(3, F - 1, h//downscale, w//downscale)
+            ],
+                         dim=1).to(self.device) # after cat (with broadcast) it's (3, F, H, W)
+        ])[0] # input ends up being (1, 3, F, H, W)
+        y_small = torch.concat([msk_small, y_small])
 
         @contextmanager
         def noop_no_sync():
@@ -340,45 +411,30 @@ class WanI2V:
         ):
             boundary = self.boundary * self.num_train_timesteps
 
-            if sample_solver == 'unipc':
-                sample_scheduler = FlowUniPCMultistepScheduler(
-                    num_train_timesteps=self.num_train_timesteps,
-                    shift=1,
-                    use_dynamic_shifting=False)
-                sample_scheduler.set_timesteps(
-                    sampling_steps, device=self.device, shift=shift)
-                timesteps = sample_scheduler.timesteps
-            elif sample_solver == 'dpm++':
-                sample_scheduler = FlowDPMSolverMultistepScheduler(
-                    num_train_timesteps=self.num_train_timesteps,
-                    shift=1,
-                    use_dynamic_shifting=False)
-                sampling_sigmas = get_sampling_sigmas(sampling_steps, shift)
-                timesteps, _ = retrieve_timesteps(
-                    sample_scheduler,
-                    device=self.device,
-                    sigmas=sampling_sigmas)
-            else:
-                raise NotImplementedError("Unsupported solver.")
+            sample_scheduler = FlowUniPCMultistepScheduler(
+                num_train_timesteps=self.num_train_timesteps,
+                shift=1,
+                use_dynamic_shifting=False)
+            sample_scheduler.set_timesteps(
+                sampling_steps, device=self.device, shift=shift)
+            timesteps = sample_scheduler.timesteps
 
             # sample videos
-            latent = noise
+            latent = noise # 16, F, H, W
 
             arg_c = {
                 'context': [context[0]],
-                'seq_len': max_seq_len,
-                'y': [y],
+                'seq_len': max_seq_len_small,
+                'y': [y_small],
             }
 
             arg_null = {
                 'context': context_null,
-                'seq_len': max_seq_len,
-                'y': [y],
+                'seq_len': max_seq_len_small,
+                'y': [y_small],
             }
 
-            if offload_model:
-                torch.cuda.empty_cache()
-
+            # small inference
             for _, t in enumerate(tqdm(timesteps)):
                 latent_model_input = [latent.to(self.device)]
                 timestep = [t]
@@ -412,13 +468,89 @@ class WanI2V:
                 x0 = [latent]
                 del latent_model_input, timestep
 
-            if offload_model:
-                self.low_noise_model.cpu()
-                self.high_noise_model.cpu()
-                torch.cuda.empty_cache()
+            # latent is 16, F, h, w
+            decoded = self.vae.decode([latent])
 
-            if self.rank == 0:
-                videos = self.vae.decode(x0)
+            # need to put in FCHW for interpolation
+            decoded_hi = torch.nn.functional.interpolate(
+                decoded.transpose(0, 1), size=(h, w), mode="bicubic", align_corners=False
+            ) # now it's F, 3, h, w?
+
+            # encoder needs input of (1, 3, F, H, W)
+            latent = self.vae.encode([decoded_hi.transpose(0,1)])[0]
+            # latent is now (16, F, H, W)
+
+            ## final pass
+            sample_scheduler = FlowUniPCMultistepScheduler(
+                num_train_timesteps=self.num_train_timesteps,
+                shift=1,
+                use_dynamic_shifting=False)
+            sample_scheduler.set_timesteps(
+                final_sampling_steps, device=self.device, shift=shift)
+            timesteps = sample_scheduler.timesteps
+
+            # Filter timesteps based on sigma (noise level)
+            # sigmas are on CPU, timesteps on GPU
+            sigmas = sample_scheduler.sigmas
+            start_idx = (sigmas <= final_threshold).nonzero(as_tuple=True)[0]
+            start_idx = start_idx[0].item() if len(start_idx) > 0 else len(timesteps)
+            
+            filtered_timesteps = timesteps[start_idx:]
+            sample_scheduler.set_begin_index(start_idx)
+
+            # Add noise to the upscaled latent to match the starting noise level
+            if len(filtered_timesteps) > 0:
+                noise = torch.randn(latent.shape, device=self.device, dtype=latent.dtype, generator=seed_g)
+                latent = sample_scheduler.add_noise(latent, noise, filtered_timesteps[0].unsqueeze(0))
+
+            arg_c = {
+                'context': [context[0]],
+                'seq_len': max_seq_len,
+                'y': [y],
+            }
+
+            arg_null = {
+                'context': context_null,
+                'seq_len': max_seq_len,
+                'y': [y],
+            }
+
+            with set_window_size(model, final_window_size):
+                for _, t in enumerate(tqdm(filtered_timesteps)):
+                    latent_model_input = [latent.to(self.device)]
+                    timestep = [t]
+
+                    timestep = torch.stack(timestep).to(self.device)
+
+                    model = self._prepare_model_for_timestep(
+                        t, boundary, offload_model)
+                    sample_guide_scale = guide_scale[1] if t.item(
+                    ) >= boundary else guide_scale[0]
+
+                    noise_pred_cond = model(
+                        latent_model_input, t=timestep, **arg_c)[0]
+                    if offload_model:
+                        torch.cuda.empty_cache()
+                    noise_pred_uncond = model(
+                        latent_model_input, t=timestep, **arg_null)[0]
+                    if offload_model:
+                        torch.cuda.empty_cache()
+                    noise_pred = noise_pred_uncond + sample_guide_scale * (
+                        noise_pred_cond - noise_pred_uncond)
+
+                    temp_x0 = sample_scheduler.step(
+                        noise_pred.unsqueeze(0),
+                        t,
+                        latent.unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g)[0]
+                    latent = temp_x0.squeeze(0)
+
+                    x0 = [latent]
+                    del latent_model_input, timestep
+
+                if self.rank == 0:
+                    videos = self.vae.decode(x0)
 
         del noise, latent, x0
         del sample_scheduler
