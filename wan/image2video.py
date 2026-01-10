@@ -119,14 +119,6 @@ class WanI2V:
             shard_fn=shard_fn,
             convert_model_dtype=convert_model_dtype)
         
-        self.low_noise_model = WanModel.from_pretrained(
-            checkpoint_dir, subfolder=config.low_noise_checkpoint)
-        self.low_noise_model = self._configure_model(
-            model=self.low_noise_model,
-            use_sp=use_sp,
-            dit_fsdp=dit_fsdp,
-            shard_fn=shard_fn,
-            convert_model_dtype=convert_model_dtype)
         if use_sp:
             self.sp_size = get_world_size()
         else:
@@ -353,7 +345,7 @@ class WanI2V:
         
         max_seq_len_small = ((F - 1) // self.vae_stride[0] + 1) * lat_h * lat_w // (
             self.patch_size[1] * self.patch_size[2])
-        max_seq_len_small = int(math.ceil(max_seq_len / self.sp_size)) * self.sp_size
+        max_seq_len_small = int(math.ceil(max_seq_len_small / self.sp_size)) * self.sp_size
 
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
@@ -469,7 +461,7 @@ class WanI2V:
                 del latent_model_input, timestep
 
             # latent is 16, F, h, w
-            decoded = self.vae.decode([latent])
+            decoded = self.vae.decode([latent])[0]
 
             # need to put in FCHW for interpolation
             decoded_hi = torch.nn.functional.interpolate(
@@ -515,7 +507,7 @@ class WanI2V:
                 'y': [y],
             }
 
-            with set_window_size(model, final_window_size):
+            with self.set_window_size(model, final_window_size):
                 for _, t in enumerate(tqdm(filtered_timesteps)):
                     latent_model_input = [latent.to(self.device)]
                     timestep = [t]
