@@ -463,15 +463,23 @@ class WanI2V:
                 x0 = [latent]
                 del latent_model_input, timestep
 
-            # latent is 16, F, h, w
-            # Interpolate latent directly to avoid expensive VAE decode/encode
-         #   latent = torch.nn.functional.interpolate(latent, size=(base_lat_h, base_lat_w), mode="bicubic", align_corners=False)
-            latent_bt = latent.permute(1,0,2,3)  # [T,C,H,W]
-            latent_up = torch.nn.functional.interpolate(
-                latent_bt, size=(base_lat_h, base_lat_w),
-                mode="bilinear", align_corners=False
-            )
-            latent = latent_up.permute(1,0,2,3)
+            # Decode latent to pixel space
+            decoded_video = self.vae.decode([latent])[0]
+
+            # Calculate target pixel dimensions
+            target_h = base_lat_h * self.vae_stride[1]
+            target_w = base_lat_w * self.vae_stride[2]
+
+            # Bicubic upscale in pixel space
+            upscaled_video = torch.nn.functional.interpolate(
+                decoded_video.permute(1, 0, 2, 3),
+                size=(target_h, target_w),
+                mode='bicubic',
+                align_corners=False
+            ).permute(1, 0, 2, 3).clamp_(-1, 1)
+
+            # Encode back to latent space
+            latent = self.vae.encode([upscaled_video])[0]
 
             ## final pass
             sample_scheduler = FlowUniPCMultistepScheduler(
