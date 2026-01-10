@@ -205,7 +205,7 @@ class WanI2V:
         return getattr(self, required_model_name)
     
     @contextmanager
-    def set_window_size(model, window_size):
+    def set_window_size(self, model, window_size):
         old = []
         for blk in model.blocks:
             old.append(blk.self_attn.window_size)
@@ -320,6 +320,9 @@ class WanI2V:
 
         # small conditioning image, 3, H, W
         img_small=TF.resize(img, (h//downscale, w//downscale))
+
+        # Save base latent dimensions for later upscaling
+        base_lat_h, base_lat_w = lat_h, lat_w
 
         # small mask
         lat_h, lat_w = lat_h//downscale, lat_w//downscale
@@ -461,16 +464,8 @@ class WanI2V:
                 del latent_model_input, timestep
 
             # latent is 16, F, h, w
-            decoded = self.vae.decode([latent])[0]
-
-            # need to put in FCHW for interpolation
-            decoded_hi = torch.nn.functional.interpolate(
-                decoded.transpose(0, 1), size=(h, w), mode="bicubic", align_corners=False
-            ) # now it's F, 3, h, w?
-
-            # encoder needs input of (1, 3, F, H, W)
-            latent = self.vae.encode([decoded_hi.transpose(0,1)])[0]
-            # latent is now (16, F, H, W)
+            # Interpolate latent directly to avoid expensive VAE decode/encode
+            latent = torch.nn.functional.interpolate(latent, size=(base_lat_h, base_lat_w), mode="bicubic", align_corners=False)
 
             ## final pass
             sample_scheduler = FlowUniPCMultistepScheduler(
