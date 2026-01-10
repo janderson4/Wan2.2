@@ -465,7 +465,13 @@ class WanI2V:
 
             # latent is 16, F, h, w
             # Interpolate latent directly to avoid expensive VAE decode/encode
-            latent = torch.nn.functional.interpolate(latent, size=(base_lat_h, base_lat_w), mode="bicubic", align_corners=False)
+         #   latent = torch.nn.functional.interpolate(latent, size=(base_lat_h, base_lat_w), mode="bicubic", align_corners=False)
+            latent_bt = latent.permute(1,0,2,3)  # [T,C,H,W]
+            latent_up = torch.nn.functional.interpolate(
+                latent_bt, size=(base_lat_h, base_lat_w),
+                mode="bilinear", align_corners=False
+            )
+            latent = latent_up.permute(1,0,2,3)
 
             ## final pass
             sample_scheduler = FlowUniPCMultistepScheduler(
