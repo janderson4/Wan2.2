@@ -485,6 +485,8 @@ class WanI2V:
             filtered_timesteps = timesteps[start_idx:]
             sample_scheduler.set_begin_index(start_idx)
 
+            print("filtered timesteps:", filtered_timesteps)
+
             # Add noise to the upscaled latent to match the starting noise level
             if len(filtered_timesteps) > 0:
                 noise = torch.randn(latent.shape, device=self.device, dtype=latent.dtype, generator=seed_g)
