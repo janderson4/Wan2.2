@@ -466,16 +466,29 @@ class WanI2V:
                 x0 = [latent]
                 del latent_model_input, timestep
 
-            # latent is 16, F, h, w
-            # Interpolate latent directly to avoid expensive VAE decode/encode
-         #   latent = torch.nn.functional.interpolate(latent, size=(base_lat_h, base_lat_w), mode="bicubic", align_corners=False)
-            latent_bt = latent.permute(1,0,2,3)  # [T,C,H,W]
+            # Latent Upscaling & Refinement
+            # 1. Permute to [F, C, H, W] for interpolation
+            latent_bt = latent.permute(1, 0, 2, 3)
+
+            # 2. Upsample (Bicubic is smoother than bilinear for latents)
             latent_up = torch.nn.functional.interpolate(
                 latent_bt, size=(base_lat_h, base_lat_w),
-                mode="bilinear", align_corners=False
+                mode="bicubic", align_corners=False
             )
-            latent_bt = TF.gaussian_blur(latent_bt, kernel_size=[kernel, kernel], sigma=[blur, blur])
-            latent = latent_up.permute(1,0,2,3)
+
+            # 3. Variance Correction: Restore lost variance from interpolation
+            std_old = latent_bt.std()
+            std_new = latent_up.std()
+            if std_new > 0:
+                latent_up = latent_up * (std_old / std_new)
+
+            # 4. Anti-aliasing Blur: Remove grid artifacts from upsampling
+            if blur > 0:
+                # Ensure kernel size is odd
+                k = kernel if kernel % 2 == 1 else kernel + 1
+                latent_up = TF.gaussian_blur(latent_up, kernel_size=k, sigma=blur)
+
+            latent = latent_up.permute(1, 0, 2, 3)
 
             ## final pass
             sample_scheduler = FlowUniPCMultistepScheduler(
@@ -495,12 +508,17 @@ class WanI2V:
             filtered_timesteps = timesteps[start_idx:]
             sample_scheduler.set_begin_index(start_idx)
 
-            print("filtered timesteps:", filtered_timesteps)
-
             # Add noise to the upscaled latent to match the starting noise level
-            if noise_add > 0:
+            if len(filtered_timesteps) > 0:
                 noise = torch.randn(latent.shape, device=self.device, dtype=latent.dtype, generator=seed_g)
-                latent = sample_scheduler.add_noise(latent, noise, noise_add)
+                
+                # Use provided noise_add or default to the start of the schedule
+                if noise_add is not None and noise_add > 0:
+                    t_noise = torch.tensor([noise_add], device=self.device)
+                else:
+                    t_noise = filtered_timesteps[0].unsqueeze(0).to(self.device)
+
+                latent = sample_scheduler.add_noise(latent, noise, t_noise)
 
             arg_c = {
                 'context': [context[0]],
