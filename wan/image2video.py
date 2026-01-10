@@ -212,17 +212,17 @@ class WanI2V:
                 getattr(self, required_model_name).to(self.device)
         return getattr(self, required_model_name)
     
-@contextmanager
-def set_window_size(model, window_size):
-    old = []
-    for blk in model.blocks:
-        old.append(blk.self_attn.window_size)
-        blk.self_attn.window_size = window_size
-    try:
-        yield
-    finally:
-        for blk, w in zip(model.blocks, old):
-            blk.self_attn.window_size = w
+    @contextmanager
+    def set_window_size(model, window_size):
+        old = []
+        for blk in model.blocks:
+            old.append(blk.self_attn.window_size)
+            blk.self_attn.window_size = window_size
+        try:
+            yield
+        finally:
+            for blk, w in zip(model.blocks, old):
+                blk.self_attn.window_size = w
 
 
     def generate(self,
