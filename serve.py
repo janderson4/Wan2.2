@@ -165,6 +165,9 @@ async def generate_endpoint(
     downscale: int = Form(None),
     final_window_size: int = Form(None),
     final_threshold: float = Form(None),
+    kernel: int = Form(None),
+    blur: float = Form(None),
+    noise_add: int = Form(None),
     # Files
     image: UploadFile = File(None),
     audio: UploadFile = File(None),
@@ -235,6 +238,9 @@ async def generate_endpoint(
                 "downscale": downscale,
                 "final_window_size": final_window_size,
                 "final_threshold": final_threshold,
+                "kernel": kernel,
+                "blur": blur,
+                "noise_add": noise_add,
             })
         elif "s2v" in args_config.task:
              kwargs.update({

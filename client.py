@@ -28,6 +28,9 @@ def main():
     parser.add_argument("--downscale", type=int, default=None)
     parser.add_argument("--final_window_size", type=int, default=None)
     parser.add_argument("--final_threshold", type=float, default=None)
+    parser.add_argument("--kernel", type=int, default=None)
+    parser.add_argument("--blur", type=int, default=None)
+    parser.add_argument("--noise_add", type=float, default=None)
 
     args = parser.parse_args()
 
@@ -48,6 +51,9 @@ def main():
     if args.downscale is not None: data["downscale"] = args.downscale
     if args.final_window_size is not None: data["final_window_size"] = args.final_window_size
     if args.final_threshold is not None: data["final_threshold"] = args.final_threshold
+    if args.kernel is not None: data["kernel"] = args.kernel
+    if args.blur is not None: data["blur"] = args.blur
+    if args.noise_add is not None: data["noise_add"] = args.noise_add
 
     files = []
     if args.image:

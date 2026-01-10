@@ -229,6 +229,9 @@ class WanI2V:
                  downscale=None,
                  final_window_size=None, # the window size for attention in the final round
                  final_threshold = None, # the approximate assumed noise level of the upsampled image
+                 kernel=3,
+                 blur=0.5,
+                 noise_add=0,
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
@@ -471,7 +474,7 @@ class WanI2V:
                 latent_bt, size=(base_lat_h, base_lat_w),
                 mode="bilinear", align_corners=False
             )
-            latent_bt = TF.gaussian_blur(latent_bt, kernel_size=[3,3], sigma=[0.4,0.4])
+            latent_bt = TF.gaussian_blur(latent_bt, kernel_size=[kernel, kernel], sigma=[blur, blur])
             latent = latent_up.permute(1,0,2,3)
 
             ## final pass
@@ -495,9 +498,9 @@ class WanI2V:
             print("filtered timesteps:", filtered_timesteps)
 
             # Add noise to the upscaled latent to match the starting noise level
-         #   if len(filtered_timesteps) > 0:
-         #       noise = torch.randn(latent.shape, device=self.device, dtype=latent.dtype, generator=seed_g)
-         #       latent = sample_scheduler.add_noise(latent, noise, filtered_timesteps[0].unsqueeze(0))
+            if noise_add > 0:
+                noise = torch.randn(latent.shape, device=self.device, dtype=latent.dtype, generator=seed_g)
+                latent = sample_scheduler.add_noise(latent, noise, noise_add)
 
             arg_c = {
                 'context': [context[0]],
