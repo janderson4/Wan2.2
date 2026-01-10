@@ -13,7 +13,6 @@ ftfy
 dashscope
 imageio-ffmpeg
 numpy>=1.23.5,<2
-flash_attn
 ninja
 packaging
 decord
