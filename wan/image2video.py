@@ -512,6 +512,19 @@ class WanI2V:
             # Encode back to latent space
             latent = self.vae.encode([upscaled_video])[0]
 
+            # Update args for high-res model
+            arg_c = {
+                'context': [context[0]],
+                'seq_len': max_seq_len,
+                'y': [y],
+            }
+
+            arg_null = {
+                'context': context_null,
+                'seq_len': max_seq_len,
+                'y': [y],
+            }
+
             ########################################
             # GOLDEN SECTION SEARCH FOR TRUE SIGMA
             ########################################
@@ -564,12 +577,13 @@ class WanI2V:
                 
                 return total_score
 
-            def estimate_noise_endpoint(latent, sigma, model, timestep_val, arg_c, arg_null, guide_scale_val):
+            def estimate_noise_endpoint(latent, sigma, model, arg_c, arg_null, guide_scale_val):
                 """
                 Given latent at unknown noise level sigma, estimate what the noise endpoint x1 should be.
                 Uses the flow matching formulation: x_t = (1-t)*x0 + t*x1
                 Model predicts v ≈ x1 - x0, so: x1_hat = x_t + (1-t)*v
                 """
+                timestep_val = sigma * 1000.0
                 with torch.no_grad():
                     latent_input = [latent.to(model.device)]
                     t_tensor = torch.tensor([timestep_val], device=model.device)
@@ -601,9 +615,6 @@ class WanI2V:
             boundary_temp = boundary  # Use your existing boundary
             guide_scale_temp = guide_scale[1]  # Use high noise guide scale initially
 
-            # Pick a timestep value for evaluation (use a mid-range value)
-            eval_timestep = 500.0
-
             # Golden section search
             x1 = a + resphi * (b - a)
             x2 = b - resphi * (b - a)
@@ -612,8 +623,8 @@ class WanI2V:
             print(f"\nEvaluating sigma={x1:.6f}...")
             noise1 = estimate_noise_endpoint(
                 latent.clone(), x1, 
-                self._prepare_model_for_timestep(torch.tensor(eval_timestep), boundary_temp, offload_model),
-                eval_timestep, arg_c, arg_null, guide_scale_temp
+                self._prepare_model_for_timestep(torch.tensor(x1 * 1000.0), boundary_temp, offload_model),
+                arg_c, arg_null, guide_scale_temp
             )
             f1 = score_noise_gaussianity(noise1)
             print(f"  Score: {f1:.6f} (mean={noise1.mean():.4f}, std={noise1.std():.4f})")
@@ -621,8 +632,8 @@ class WanI2V:
             print(f"\nEvaluating sigma={x2:.6f}...")
             noise2 = estimate_noise_endpoint(
                 latent.clone(), x2,
-                self._prepare_model_for_timestep(torch.tensor(eval_timestep), boundary_temp, offload_model),
-                eval_timestep, arg_c, arg_null, guide_scale_temp
+                self._prepare_model_for_timestep(torch.tensor(x2 * 1000.0), boundary_temp, offload_model),
+                arg_c, arg_null, guide_scale_temp
             )
             f2 = score_noise_gaussianity(noise2)
             print(f"  Score: {f2:.6f} (mean={noise2.mean():.4f}, std={noise2.std():.4f})")
@@ -642,8 +653,8 @@ class WanI2V:
                     print(f"Evaluating sigma={x1:.6f}...")
                     noise1 = estimate_noise_endpoint(
                         latent.clone(), x1,
-                        self._prepare_model_for_timestep(torch.tensor(eval_timestep), boundary_temp, offload_model),
-                        eval_timestep, arg_c, arg_null, guide_scale_temp
+                        self._prepare_model_for_timestep(torch.tensor(x1 * 1000.0), boundary_temp, offload_model),
+                        arg_c, arg_null, guide_scale_temp
                     )
                     f1 = score_noise_gaussianity(noise1)
                     print(f"  Score: {f1:.6f} (mean={noise1.mean():.4f}, std={noise1.std():.4f})")
@@ -656,8 +667,8 @@ class WanI2V:
                     print(f"Evaluating sigma={x2:.6f}...")
                     noise2 = estimate_noise_endpoint(
                         latent.clone(), x2,
-                        self._prepare_model_for_timestep(torch.tensor(eval_timestep), boundary_temp, offload_model),
-                        eval_timestep, arg_c, arg_null, guide_scale_temp
+                        self._prepare_model_for_timestep(torch.tensor(x2 * 1000.0), boundary_temp, offload_model),
+                        arg_c, arg_null, guide_scale_temp
                     )
                     f2 = score_noise_gaussianity(noise2)
                     print(f"  Score: {f2:.6f} (mean={noise2.mean():.4f}, std={noise2.std():.4f})")
@@ -673,8 +684,8 @@ class WanI2V:
             print("Verifying optimal sigma...")
             final_noise = estimate_noise_endpoint(
                 latent.clone(), optimal_sigma,
-                self._prepare_model_for_timestep(torch.tensor(eval_timestep), boundary_temp, offload_model),
-                eval_timestep, arg_c, arg_null, guide_scale_temp
+                self._prepare_model_for_timestep(torch.tensor(optimal_sigma * 1000.0), boundary_temp, offload_model),
+                arg_c, arg_null, guide_scale_temp
             )
             final_score = score_noise_gaussianity(final_noise)
             print(f"Final noise estimate - mean: {final_noise.mean():.4f}, std: {final_noise.std():.4f}")
