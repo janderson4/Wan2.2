@@ -6,4 +6,4 @@ sample_scheduler = FlowUniPCMultistepScheduler(
 sample_scheduler.set_timesteps(
     300, shift=5)
 timesteps = sample_scheduler.timesteps
-print(timesteps[-50:])
+print(timesteps)
