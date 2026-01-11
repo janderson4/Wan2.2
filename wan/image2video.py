@@ -332,6 +332,7 @@ class WanI2V:
 
         if final_window_size != (-1, -1):
             if final_window_size[0] > 2* base_lat_h * base_lat_w:
+            if final_window_size[0] >= base_lat_h // self.patch_size[1] and final_window_size[1] >= base_lat_w // self.patch_size[2]:
                 final_window_size = (-1, -1)
 
         # small mask
@@ -473,6 +474,7 @@ class WanI2V:
                 x0 = [latent]
                 del latent_model_input, timestep
 
+            '''
             # Latent Upscaling & Refinement
             # 1. Permute to [F, C, H, W] for interpolation
             latent_bt = latent.permute(1, 0, 2, 3)
@@ -480,7 +482,7 @@ class WanI2V:
             # 2. Upsample (Bicubic is smoother than bilinear for latents)
             latent_up = torch.nn.functional.interpolate(
                 latent_bt, size=(base_lat_h, base_lat_w),
-                mode="bicubic", align_corners=False
+                mode="bilinear", align_corners=False
             )
 
             if blur > 0:
@@ -489,6 +491,27 @@ class WanI2V:
                 latent_up = TF.gaussian_blur(latent_up, kernel_size=k, sigma=blur)
 
             latent = latent_up.permute(1, 0, 2, 3)
+            '''
+
+            # Decode latent to pixel space
+            decoded_video = self.vae.decode([latent])[0]
+
+            print("decoded_video shape:", decoded_video.shape)  # expect (3, T, H, W)
+
+            # Calculate target pixel dimensions
+            target_h = base_lat_h * self.vae_stride[1]
+            target_w = base_lat_w * self.vae_stride[2]
+
+            # Bicubic upscale in pixel space
+            upscaled_video = torch.nn.functional.interpolate(
+                decoded_video.permute(1, 0, 2, 3),
+                size=(target_h, target_w),
+                mode='bicubic',
+                align_corners=False
+            ).permute(1, 0, 2, 3)
+
+            # Encode back to latent space
+            latent = self.vae.encode([upscaled_video])[0]
 
             ## final pass
             sample_scheduler = FlowUniPCMultistepScheduler(
@@ -513,10 +536,9 @@ class WanI2V:
                 noise = torch.randn(latent.shape, device=self.device, dtype=latent.dtype, generator=seed_g)
                 
                 # Use provided noise_add or default to the start of the schedule
+                sigma = float(sample_scheduler.sigmas[start_idx].item())
                 if noise_add is not None and noise_add > 0:
                     sigma = noise_add / 1000.0
-                else:
-                    sigma = filtered_timesteps[0].item() / 1000.0
 
                 # Manual Flow Matching noise addition: x_t = (1 - sigma) * x_0 + sigma * epsilon
                 # This avoids scheduler errors if noise_add isn't exactly in the schedule
