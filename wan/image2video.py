@@ -332,7 +332,6 @@ class WanI2V:
 
         if final_window_size != (-1, -1):
             if final_window_size[0] > 2* base_lat_h * base_lat_w:
-            if final_window_size[0] >= base_lat_h // self.patch_size[1] and final_window_size[1] >= base_lat_w // self.patch_size[2]:
                 final_window_size = (-1, -1)
 
         # small mask
