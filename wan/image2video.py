@@ -277,7 +277,7 @@ class WanI2V:
         # preprocess
         if downscale is None: downscale = 4
         if final_sampling_steps is None: final_sampling_steps = 40
-        if final_window_size is None: final_window_size = (4500, 4500) # 80*45*1.25
+        if final_window_size is None: final_window_size = (-1, -1)
         if final_threshold is None: final_threshold = 0.08
 
         if isinstance(final_window_size, int):
@@ -326,6 +326,13 @@ class WanI2V:
 
         # Save base latent dimensions for later upscaling
         base_lat_h, base_lat_w = lat_h, lat_w
+
+        if type(final_window_size)==int:
+            final_window_size=(final_window_size, final_window_size)
+
+        if final_window_size != (-1, -1):
+            if final_window_size > 2* base_lat_h * base_lat_w:
+                final_window_size = (-1, -1)
 
         # small mask
         lat_h, lat_w = lat_h//downscale, lat_w//downscale
@@ -527,7 +534,7 @@ class WanI2V:
                 'y': [y],
             }
 
-            with self.set_window_size(model, final_window_size):
+            with self.set_window_size(self.low_noise_model, final_window_size), self.set_window_size(self.high_noise_model, final_window_size):
                 for _, t in enumerate(tqdm(filtered_timesteps)):
                     latent_model_input = [latent.to(self.device)]
                     timestep = [t]

@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--final_window_size", type=int, default=None)
     parser.add_argument("--final_threshold", type=float, default=None)
     parser.add_argument("--kernel", type=int, default=None)
-    parser.add_argument("--blur", type=int, default=None)
+    parser.add_argument("--blur", type=float, default=None)
     parser.add_argument("--noise_add", type=int, default=None)
 
     args = parser.parse_args()
